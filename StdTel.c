@@ -1,5 +1,5 @@
 /*
- * StdTel.cpp
+ * StdTel.c
  *
  *   Author: John Burger
  *
@@ -25,12 +25,16 @@
 #include <Windows.h>
 #include <WinSock2.h>
 
+#include <io.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #define ErrorSuffix "\a\r\n"
 
-const u_short TelnetPort = 23;
+enum bool { false, true };
+
+enum { TelnetPort = 23 };
 
 const char ExitChar = ']' - '@'; // Convert to <Ctrl> character
 
@@ -51,7 +55,7 @@ void Usage(const char *argv0) {
     printf("To exit, type <Ctrl><%c><Enter>\r\n", ExitChar+'@');
 } // Usage(argv0)
 
-bool __cdecl WSACheck(bool check, const char *format, ...) {
+enum bool __cdecl WSACheck(enum bool check, const char *format, ...) {
     if (check) {
         return true;
     } // if
@@ -67,25 +71,32 @@ bool __cdecl WSACheck(bool check, const char *format, ...) {
     return false;
 } // WSACheck(check, format, ...)
 
-bool Connect(SOCKET s, const hostent &host) {
-    sockaddr_in addr = { AF_INET, htons(port),
-                         { { (UCHAR)host.h_addr[0], (UCHAR)host.h_addr[1],
-                             (UCHAR)host.h_addr[2], (UCHAR)host.h_addr[3] } } };
+enum bool Connect(SOCKET s, const struct hostent * const host) {
+    struct sockaddr_in addr;
+    const char * const *alias = host->h_addr_list;
 
-    printf("Connecting to %s", host.h_name);
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.S_un.S_un_b.s_b1 = (UCHAR)host->h_addr[0];
+    addr.sin_addr.S_un.S_un_b.s_b2 = (UCHAR)host->h_addr[1];
+    addr.sin_addr.S_un.S_un_b.s_b3 = (UCHAR)host->h_addr[2];
+    addr.sin_addr.S_un.S_un_b.s_b4 = (UCHAR)host->h_addr[3];
+    printf("Connecting to %s", host->h_name);
     if (port != TelnetPort) {
         printf(" on port %d", port);
     } // if
     printf(".\r\n");
 
-    const char * const *alias = host.h_addr_list;
     while (*alias!=NULL) {
-        addr.sin_addr.S_un = { (UCHAR)(*alias)[0], (UCHAR)(*alias)[1],
-                               (UCHAR)(*alias)[2], (UCHAR)(*alias)[3] };
+        addr.sin_addr.S_un.S_un_b.s_b1 = (UCHAR)(*alias)[0];
+        addr.sin_addr.S_un.S_un_b.s_b2 = (UCHAR)(*alias)[1];
+        addr.sin_addr.S_un.S_un_b.s_b3 = (UCHAR)(*alias)[2];
+        addr.sin_addr.S_un.S_un_b.s_b4 = (UCHAR)(*alias)[3];
         printf("Trying %u.%u.%u.%u... ",
             addr.sin_addr.S_un.S_un_b.s_b1, addr.sin_addr.S_un.S_un_b.s_b2,
             addr.sin_addr.S_un.S_un_b.s_b3, addr.sin_addr.S_un.S_un_b.s_b4);
-        if (connect(s, (sockaddr *)&addr, sizeof addr) == 0) {
+        if (connect(s, (struct sockaddr *)&addr, sizeof addr) == 0) {
             printf("Success!\r\n");
             return true;
         } // if
@@ -97,12 +108,16 @@ bool Connect(SOCKET s, const hostent &host) {
 
 DWORD WINAPI Send(void *param) {
     SOCKET s = (SOCKET)param;
+    _setmode(_fileno(stdin), _O_BINARY);
+    setvbuf(stdin, NULL, _IONBF, 0); // Unbuffer the I/O
     for (;;) {
-        int got = getc(stdin);
-        if ((got == EOF) || (got == ExitChar)) {
+        char c;
+        if (fread(&c, sizeof c, 1, stdin)==0) {
             break;
         } // if
-        char c = (char)got;
+        if (c == ExitChar) {
+            break;
+        } // if
         if (send(s, &c, 1, 0) == SOCKET_ERROR) {
             break;
         } // if
@@ -111,7 +126,7 @@ DWORD WINAPI Send(void *param) {
     return 0;
 } // Send(param)
 
-int __cdecl main(int argc, char *argv[], char * /*env*/[]) {
+int __cdecl main(int argc, char *argv[]) {
     if (argc<2 || argc>3) {
         Usage(argv[0]);
         return 1;
@@ -125,7 +140,7 @@ int __cdecl main(int argc, char *argv[], char * /*env*/[]) {
         return 2;
     } // if
 
-    hostent *host = gethostbyname(argv[1]);
+    struct hostent *host = gethostbyname(argv[1]);
     if (!WSACheck(host != NULL, "Host %s not found!", argv[1])) {
         Usage(argv[0]);
         return 3;
@@ -134,7 +149,7 @@ int __cdecl main(int argc, char *argv[], char * /*env*/[]) {
     if (argc == 3) {
         port = (u_short)atoi(argv[2]);
         if (port == 0) {
-            servent *serv = getservbyname(argv[2], "tcp");
+            struct servent *serv = getservbyname(argv[2], "tcp");
             if (serv != NULL) {
                 port = ntohs((u_short)serv->s_port);
             } // if
@@ -156,7 +171,7 @@ int __cdecl main(int argc, char *argv[], char * /*env*/[]) {
                   "Socket option error!")) {
         return 6;
     } // if
-    if (!Connect(s, *host)) {
+    if (!Connect(s, host)) {
         fprintf(stderr, "Could not connect to %s on port %d!" ErrorSuffix, argv[1], port);
         closesocket(s);
         return 7;
@@ -185,4 +200,4 @@ int __cdecl main(int argc, char *argv[], char * /*env*/[]) {
     } // for
     closesocket(s);
     return 0;
-} // main(argc, argv, env)
+} // main(argc, argv)
